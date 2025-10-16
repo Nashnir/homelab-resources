@@ -41,21 +41,42 @@ iface vmbr1 inet static
         post-up   echo 1 > /proc/sys/net/ipv4/ip_forward
 
         # NAT vmbr1 subnet out through the VPN interface (pia)
-        #post-up   iptables -t nat -A POSTROUTING -s '10.150.50.0/24' -o vmbr0 -j MASQUERADE
-        #post-down iptables -t nat -D POSTROUTING -s '10.150.50.0/24' -o vmbr0 -j MASQUERADE
         post-up   iptables -t nat -A POSTROUTING -s '10.150.50.0/24' -o pia -j MASQUERADE
         post-down iptables -t nat -D POSTROUTING -s '10.150.50.0/24' -o pia -j MASQUERADE
         # post-up   iptables -t raw -I PREROUTING -i fwbr+ -j CT --zone 1
         # post-down iptables -t raw -D PREROUTING -i fwbr+ -j CT --zone 1
+
+        # Accept established/related first
+        post-up   iptables -I FORWARD 1 -m state --state ESTABLISHED,RELATED -j ACCEPT
+        post-down iptables -D FORWARD   -m state --state ESTABLISHED,RELATED -j ACCEPT
 
         # Forwarding rules for VPN traffic
         # Currently set to PIA VPN setup through wireguard on Proxmox Host
         post-up   iptables -A FORWARD -i vmbr1 -o pia -j ACCEPT
         post-down iptables -D FORWARD -i vmbr1 -o pia -j ACCEPT
 
+        # Allow Pi-hole on vmbr0 to reach Unbound on vmbr1 (DNS only)
+        #post-up   iptables -I FORWARD 1 -i vmbr0 -o vmbr1 -d 10.150.50.5 -p udp --dport 53 -j ACCEPT
+        #post-up   iptables -I FORWARD 1 -i vmbr0 -o vmbr1 -d 10.150.50.5 -p tcp --dport 53 -j ACCEPT
+        #post-down iptables -D FORWARD   -i vmbr0 -o vmbr1 -d 10.150.50.5 -p udp --dport 53 -j ACCEPT
+        #post-down iptables -D FORWARD   -i vmbr0 -o vmbr1 -d 10.150.50.5 -p tcp --dport 53 -j ACCEPT
+
+        # Return traffic (Unbound → Pi-hole)
+        #post-up   iptables -I FORWARD 1 -i vmbr1 -o vmbr0 -s 10.150.50.5 -m state --state ESTABLISHED,RELATED -j ACCEPT
+        #post-down iptables -D FORWARD   -i vmbr1 -o vmbr0 -s 10.150.50.5 -m state --state ESTABLISHED,RELATED -j ACCEPT
+
+        # Allow responses from VPN → vmbr1
         post-up   iptables -A FORWARD -i pia -o vmbr1 -m state --state RELATED,ESTABLISHED -j ACCEPT
         post-down iptables -D FORWARD -i pia -o vmbr1 -m state --state RELATED,ESTABLISHED -j ACCEPT
 
         # Kill-switch: block any non-VPN egress from vmbr1
         post-up   iptables -A FORWARD -i vmbr1 ! -o pia -j REJECT
         post-down iptables -D FORWARD -i vmbr1 ! -o pia -j REJECT
+
+#############################################
+# Notes:
+# - Unbound LXC → vmbr1 (e.g. 10.150.50.5/24 gw=10.150.50.1)
+# - Pi-hole LXC → vmbr0 (e.g. 192.168.0.10/24 gw=192.168.0.1)
+# - Host runs WireGuard (pia) and NATs vmbr1 traffic through it
+# - No route leakage between LAN and VPN except DNS to Unbound
+#############################################
